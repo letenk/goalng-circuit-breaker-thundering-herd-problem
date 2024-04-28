@@ -20,12 +20,54 @@ type User struct {
 type Config struct {
 	redisClient *redis.Client
 	dbClient    *sql.DB
+	circuit     *CircuitBreaker
 }
 
-func NewUser(dbClient *sql.DB, redisClient *redis.Client) *Config {
+type CircuitBreaker struct {
+	failureThreshold   int
+	consecutiveFailure int
+	open               bool
+	openedAt           time.Time
+}
+
+const circuitBreakerResetTimeout = 2 * time.Second
+
+func NewCircuitBreaker(failureThreshold int) *CircuitBreaker {
+	return &CircuitBreaker{
+		failureThreshold:   failureThreshold,
+		consecutiveFailure: 0,
+		open:               false,
+	}
+}
+
+func NewUser(dbClient *sql.DB, redisClient *redis.Client, failureThreshold int) *Config {
 	return &Config{
 		dbClient:    dbClient,
 		redisClient: redisClient,
+		circuit:     NewCircuitBreaker(failureThreshold),
+	}
+}
+
+func (cb *CircuitBreaker) IsOpen() bool {
+	if cb.open {
+		// Check last time opened
+		if time.Since(cb.openedAt) >= circuitBreakerResetTimeout {
+			cb.open = false
+			cb.consecutiveFailure = 0
+			log.Println("Circuit Breaker closed")
+		} else {
+			return true
+		}
+	}
+	return false
+}
+
+func (cb *CircuitBreaker) IncrementConsecutiveFailure() {
+	cb.consecutiveFailure++
+	if cb.consecutiveFailure >= cb.failureThreshold {
+		cb.open = true
+		cb.openedAt = time.Now()
+		log.Println("Circuit Breaker opened")
 	}
 }
 
@@ -49,6 +91,10 @@ func (e *Config) getDataFromMysql(username string) (*User, error) {
 }
 
 func (e *Config) getDataFromRedis(username string) (*User, error) {
+	if e.circuit.IsOpen() {
+		return nil, fmt.Errorf("circuit breaker is open")
+	}
+
 	val, err := e.redisClient.Get(username).Result()
 	if err != nil {
 		log.Printf("failed to get redis with key [%s], err: %v", username, err)
@@ -56,6 +102,7 @@ func (e *Config) getDataFromRedis(username string) (*User, error) {
 		log.Println("get data from mysql")
 		user, err := e.getDataFromMysql(username)
 		if err != nil {
+			e.circuit.IncrementConsecutiveFailure()
 			return nil, err
 		}
 
@@ -102,7 +149,8 @@ func main() {
 		DB:       0,
 	})
 
-	client := NewUser(mysqlConn, redisConn)
+	failureThreshold := 3
+	client := NewUser(mysqlConn, redisConn, failureThreshold)
 
 	username := "user20001"
 

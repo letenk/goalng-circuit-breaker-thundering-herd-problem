@@ -1,0 +1,3 @@
+# Circuit Patterns for the Solution of the Thundering Herd Problem
+
+The thundering herd problem is a common problem in distributed systems and can cause significant performance degradation. By using design patterns like Circuit Breaker, you can overcome these problems and ensure your applications run smoothly and efficiently. Always consider the potential for thundering herd problems when designing systems that depend on limited resources and implement appropriate solutions to prevent them.
